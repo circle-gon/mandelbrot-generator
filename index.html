@@ -40,6 +40,7 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
+        font-family: sans-serif;
       }
 
       /* From https://stackoverflow.com/a/75882568 */
@@ -69,6 +70,30 @@
 
       #gpuerror {
         display: none;
+      }
+
+      details summary {
+        border: 0.1em solid black;
+        border-radius: 1em;
+        padding: 0.2em;
+        margin-bottom: 0.5em;
+      }
+
+      details div {
+        border: 0.1em solid black;
+        padding: 0.2em;
+      }
+
+      button {
+        padding: 0.3em;
+        border: 0.1em solid black;
+        border-radius: 1em;
+        background-color: transparent;
+        margin: 0.2em;
+      }
+
+      button:hover {
+        cursor: pointer;
       }
     </style>
     <script type="text/wat" id="wat">
@@ -420,6 +445,17 @@
         return out
       }
 
+      function interpolate(num) {
+        if (num >= 1) return NOCOLOR
+
+        const eff = num * (COLORS.length - 1)
+        const idx = Math.trunc(eff)
+        const part = eff % 1
+        const color1 = COLORS[idx]
+        const color2 = COLORS[idx + 1]
+        return Array(3).fill().map((_, i) => color1[i] * (1 - part) + color2[i] * part)
+      }
+
       async function draw(eager, lazy) {
         const { density, minX, minY, maxX, maxY, maxIter, coloring, computeMode } = eager
         const { x, y, scale } = lazy
@@ -443,8 +479,11 @@
             const effX = i % density
             const effY = Math.floor(i / density)
             const result = results[i]
-            const color = (result === maxIter ? NOCOLOR : 
-              (coloring === 1 ? COLORS[result % COLORS.length] : [255, 255, 255]))
+
+            const f = Math.min(result / maxIter, 1)
+            const color = coloring === 1 ? interpolate(f) : (result === maxIter ? NOCOLOR : 
+              (coloring === 2 ? COLORS[result % COLORS.length] : [255, 255, 255]))
+
             const base = PREC * effX + PREC ** 2 * density * effY
             for (let x = 0; x < PREC; x++) {
               for (let y = 0; y < PREC; y++) {
@@ -527,6 +566,7 @@
         const prog = document.getElementById("prog")
 
         inputUtil("blackwhite", v => coloring = v)
+        inputUtil("grayscale", v => coloring = v)
         inputUtil("colored", v => coloring = v)
         inputUtil("gpu", v => {
           // When GPU mode is used it can lead to density becoming too high
@@ -592,23 +632,28 @@
         worker.postMessage([ctx, module, SUPPORTED ? wgslCode : ""], [ctx])
 
         // Generate twice as much so zooming out looks nicer
+        // Panning
         const ZOOMOUT = 2
-        let x = 0
-        let y = 0
-        let startX = 0
-        let startY = 0
-        let scale = ZOOMOUT
+        let x
+        let y
+        let scale
+        
+        // Drawing
+        let density = 500
         let minX
         let minY
         let maxX
         let maxY
         let maxIter = 300
-        let density = 500
         let coloring = 0
+        let computeMode = 0
+
+        // UIing
         let isDown = false
         let isBusy = false
         let resize = false
-        let computeMode = 0
+        let startX = 0
+        let startY = 0
         let gpuMax
 
         function calcTrueValues(zoomOut) {
@@ -627,6 +672,8 @@
         function resetDefaults() {
           // Keep the behavior consistent
           scale = ZOOMOUT
+          x = 0
+          y = 0
           minX = -2 * ZOOMOUT
           minY = -2 * ZOOMOUT
           maxX = 2 * ZOOMOUT
@@ -636,7 +683,11 @@
         document.getElementById("reset").addEventListener("click", () => {
           resetDefaults()
           updateInputs()
-          draw()
+          if (!isBusy) draw()
+        })
+
+        document.getElementById("force").addEventListener("click", () => {
+          if (!isBusy) draw()
         })
 
         worker.addEventListener("message", ({
@@ -753,18 +804,28 @@
   </head>
   <body>
     <div id="options">
-      <label for="density">Point density: </label><input type="number" min="1" step="1" id="density" /><br />
+      <label for="density" title="How many points (in the X and Y axis) to use to draw the graph">Point density: </label><input type="number" min="1" step="1" id="density" /><br />
       <div id="dense"></div>
-      <label>Viewing range: </label> <input type="number" id="minX" /> + <input type="number" id="minY" />i
+      <label title="The range of points to visualize">Viewing range: </label> <input type="number" id="minX" /> + <input type="number" id="minY" />i
       to <input type="number" id="maxX" /> + <input type="number" id="maxY" />i<br />
-      <label for="iter">Maximum iterations: </label><input type="number" min="1" step="1" id="iter" /><br />
-      Coloring: <input type="radio" id="blackwhite" name="color" value="0" checked autocomplete="off" /><label for="blackwhite">Black and White</label>
-      <input type="radio" id="colored" name="color" value="1" autocomplete="off" /><label for="colored">Colored</label><br />
-      Performance:<br /><input type="radio" id="gpu" name="perf" value="0" checked autocomplete="off" /><label for="gpu">High performance (low precision)</label><br />
-      <input type="radio" id="cpu" name="perf" value="1" autocomplete="off" /><label for="cpu">Low performance (high precision)</label><br />
+      <label for="iter" title="How many iterations of the Mandelbrot function to use">Maximum iterations: </label><input type="number" min="1" step="1" id="iter" /><br />
+      Coloring: <input type="radio" id="blackwhite" name="color" value="0" checked autocomplete="off" /><label title="Black-white coloring" for="blackwhite">Black and White</label>
+      <input type="radio" id="grayscale" name="color" value="1" autocomplete="off" /><label title="Grayscale (based on iteration count)" for="grayscale">Grayscale</label>
+      <input type="radio" id="colored" name="color" value="2" autocomplete="off" /><label title="Red-purple coloring (based on iteration count)" for="colored">Colored</label><br />
+      Performance:<br /><input type="radio" id="gpu" name="perf" value="0" checked autocomplete="off" /><label title="More speed, less accuracy, and a cap on point density (uses GPU)" for="gpu">High performance (low precision)</label><br />
+      <input type="radio" id="cpu" name="perf" value="1" autocomplete="off" /><label title="Less speed and more accuracy (uses CPU)" for="cpu">Low performance (high precision)</label><br />
       <div id="gpuerror">Your browser does not support the high performance option.</div><br />
       <div id="prog"></div>
-      <button id="reset">Reset view</button>
+      <button id="reset">Reset view</button><button id="force">Force redraw</button><br /><br />
+      <details>
+        <summary>Tips</summary>
+        <div>
+          Hovering over some text can give a description of what it does.<br />
+          Use low performance when the graph looks pixelated.<br />
+          Increase the iteration count if the graph has big black circles.<br />
+          Increase point density if the black points on the graph are too spaced apart.
+        </div>
+      </details>
     </div>
     <canvas id="graph"></canvas>
   </body>

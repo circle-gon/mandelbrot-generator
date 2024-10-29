@@ -533,7 +533,7 @@
           if (density > gpuMax) {
             density = gpuMax
             densitySelect(density)
-            error.textContent = `Density too large. Maximum size: ${gpuMax.toLocaleString("en-US")}`
+            error.textContent = `Density too large for high performance option. Maximum size: ${gpuMax.toLocaleString("en-US")}`
           }
           computeMode = v
         })

@@ -3,13 +3,13 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Yet another mandlebrot set generator" />
+    <meta name="description" content="Yet another mandelbrot set generator" />
     
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="mandlebrot set generator" />
-    <meta property="og:description" content="Yet another mandlebrot set generator" />
+    <meta property="og:title" content="mandelbrot set generator" />
+    <meta property="og:description" content="Yet another mandelbrot set generator" />
 
-    <title>mandlebrot set generator</title>
+    <title>mandelbrot set generator</title>
     <style>
       html,
       body,
@@ -74,7 +74,7 @@
     <script type="text/wat" id="wat">
       (module
         (import "import" "memory" (memory 1))
-        (func $mandlebrot
+        (func $mandelbrot
           ;; WASM function that calculates how long it takes for the complex number $r + i*$i
           ;; to exceed the circle of radius 2
           (param $r f64) ;; real value of c
@@ -146,7 +146,7 @@
 
         ;; Generate numbers
         (func
-          (export "mandlebrot")
+          (export "mandelbrot")
           (param $d i32)
           (param $sX f64)
           (param $sY f64)
@@ -183,7 +183,7 @@
             f64.div
             call $inter ;; Calculate Y
             local.get $i
-            call $mandlebrot
+            call $mandelbrot
             i32.store
             local.get $c
             local.get $d
@@ -236,7 +236,7 @@
 
       @compute
       @workgroup_size(8, 8)
-      fn mandlebrot(@builtin(global_invocation_id) fullId: vec3u) {
+      fn mandelbrot(@builtin(global_invocation_id) fullId: vec3u) {
         let x = fullId.x;
         let y = fullId.y;
         if (x >= options.density || y >= options.density) {
@@ -249,7 +249,7 @@
       }
     </script>
     <script type="text/web-worker" id="webworker">
-      // Webworker that draws the mandlebrot set onto the screen
+      // Webworker that draws the mandelbrot set onto the screen
       const COLORS = [[255, 0, 0], [255, 165, 0], [255, 255, 0], [0, 128, 0], [0, 0, 255], [128, 0, 128]]
       const NOCOLOR = [0, 0, 0]
       const PREC = 2
@@ -318,7 +318,7 @@
           }),
           compute: {
             module: compute,
-            entryPoint: "mandlebrot"
+            entryPoint: "mandelbrot"
           }
         })
 
@@ -411,7 +411,7 @@
           memory.grow(nums)
           size += nums
         }
-        instance.exports.mandlebrot(density, minX, minY, maxX, maxY, maxIter)
+        instance.exports.mandelbrot(density, minX, minY, maxX, maxY, maxIter)
         const view = new DataView(memory.buffer)
         const out = new Uint32Array(density ** 2)
         for (let i = 0; i < density ** 2; i++) {
@@ -444,7 +444,7 @@
             const effY = Math.floor(i / density)
             const result = results[i]
             const color = (result === maxIter ? NOCOLOR : 
-                (coloring === 1 ? COLORS[result % COLORS.length] : [255, 255, 255]))
+              (coloring === 1 ? COLORS[result % COLORS.length] : [255, 255, 255]))
             const base = PREC * effX + PREC ** 2 * density * effY
             for (let x = 0; x < PREC; x++) {
               for (let y = 0; y < PREC; y++) {
@@ -494,7 +494,7 @@
           self.postMessage(["finished init", max])
         } else draw(...data)
       })
-		</script>
+    </script>
     <!-- Taking code from a demo is almost certaintly not good practice but who cares? -->
     <script src="https://webassembly.github.io/wabt/demo/libwabt.js"></script>
     <script>
@@ -675,7 +675,6 @@
         let start
 
         function draw() {
-          const trueValues = calcTrueValues(ZOOMOUT)
           isBusy = true
           start = performance.now()
           prog.textContent = "Drawing..."

@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Yet another mandlebrot set generator" />
+    
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="mandlebrot set generator" />
+    <meta property="og:description" content="Yet another mandlebrot set generator" />
+
+    <title>mandlebrot set generator</title>
+    <style>
+      html,
+      body,
+      canvas {
+        margin: 0;
+        border: 0;
+        padding: 0;
+      }
+
+      html,
+      body {
+        height: 100%;
+        width: 100%;
+      }
+
+      canvas {
+        height: 90%;
+        aspect-ratio: 1 / 1;
+        border: 2px solid black;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        font-size: calc(1vw + 5px);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      /* From https://stackoverflow.com/a/75882568 */
+      input[type=number]::-webkit-inner-spin-button, 
+      input[type=number]::-webkit-outer-spin-button { 
+        -webkit-appearance: none; 
+        margin: 0; 
+      }
+
+      input[type=number] {
+        -moz-appearance: textfield;
+      }
+
+      input {
+        width: fit-content;
+      }
+
+      #options {
+        height: 100%;
+        padding: 1em;
+      }
+
+      #dense, #gpuerror {
+        color: red;
+        font-weight: bold;
+      }
+
+      #gpuerror {
+        display: none;
+      }
+    </style>
+    <script type="text/wat" id="wat">
+      (module
+        (import "import" "memory" (memory 1))
+        (func $mandlebrot
+          ;; WASM function that calculates how long it takes for the complex number $r + i*$i
+          ;; to exceed the circle of radius 2
+          (param $r f64) ;; real value of c
+          (param $i f64) ;; imaginary value of c
+          (param $t i32) ;; iterations to use
+          (result i32) 
+          (local $c i32) ;; iteration count
+          (local $x f64) ;; real value
+          (local $y f64) ;; imaginary value
+          (loop $iter
+            local.get $x
+            local.get $y
+            f64.const 2
+            f64.mul
+            f64.mul
+            local.get $i
+            f64.add ;; Calculate imaginary term
+            local.get $x
+            local.get $x
+            f64.mul
+            local.get $y
+            local.get $y
+            f64.mul
+            f64.sub
+            local.get $r
+            f64.add ;; Calculate real term
+            local.set $x
+            local.set $y
+            local.get $x
+            local.get $x
+            f64.mul
+            local.get $y
+            local.get $y
+            f64.mul
+            f64.add ;; Calculate magnitude
+            f64.const 4
+            f64.lt
+            local.get $c
+            local.get $t
+            i32.lt_u
+            i32.and
+            (if
+              (then
+                local.get $c
+                i32.const 1
+                i32.add
+                local.set $c ;; Add one to iteration count
+                br $iter
+              )
+            )
+          )
+          local.get $c
+        )
+
+        ;; Interpolate between $s and $e
+        (func $inter
+          (param $s f64)
+          (param $e f64)
+          (param $f f64)
+          (result f64)
+          local.get $e
+          local.get $s
+          f64.sub
+          local.get $f
+          f64.mul
+          local.get $s
+          f64.add
+        )
+
+        ;; Generate numbers
+        (func
+          (export "mandlebrot")
+          (param $d i32)
+          (param $sX f64)
+          (param $sY f64)
+          (param $mX f64)
+          (param $mY f64)
+          (param $i i32)
+          (local $c i32)
+          (loop $iter
+            i32.const 4
+            local.get $c
+            i32.mul
+            local.get $sX
+            local.get $mX
+            local.get $c
+            local.get $d
+            i32.rem_u
+            f64.convert_i32_u
+            local.get $d
+            i32.const 1
+            i32.sub
+            f64.convert_i32_u
+            f64.div
+            call $inter ;; Calculate X
+            local.get $sY
+            local.get $mY
+            local.get $c
+            local.get $d
+            i32.div_u
+            f64.convert_i32_u
+            local.get $d
+            i32.const 1
+            i32.sub
+            f64.convert_i32_u
+            f64.div
+            call $inter ;; Calculate Y
+            local.get $i
+            call $mandlebrot
+            i32.store
+            local.get $c
+            local.get $d
+            local.get $d
+            i32.mul
+            i32.lt_u
+            (if
+              (then
+                local.get $c
+                i32.const 1
+                i32.add
+                local.set $c ;; Add one to iteration count
+                br $iter
+              )
+            )
+          )
+        )
+      )
+    </script>
+    <script type="text/wgsl" id="wgsl">
+      struct Options {
+        density: u32,
+        minX: f32,
+        minY: f32,
+        maxX: f32,
+        maxY: f32,
+        iter: u32,
+      }
+
+      @group(0) @binding(0) var<storage, read_write> out: array<u32>;
+      @group(0) @binding(1) var<uniform> options: Options;
+
+      fn iterations(real: f32, imag: f32, iter: u32) -> u32 {
+        var x: f32 = 0;
+        var y: f32 = 0;
+        for (var i: u32 = 0; i < iter; i++) {
+          let xt = x;
+          x = x * x - y * y + real;
+          y = 2 * xt * y + imag;
+          if x * x + y * y >= 4 {
+            return i;
+          }
+        }
+        return iter;
+      }
+
+      fn interpolate(start: f32, end: f32, factor: f32) -> f32 {
+        return start + (end - start) * factor;
+      }
+
+      @compute
+      @workgroup_size(8, 8)
+      fn mandlebrot(@builtin(global_invocation_id) fullId: vec3u) {
+        let x = fullId.x;
+        let y = fullId.y;
+        if (x >= options.density || y >= options.density) {
+          return;
+        }
+
+        let effX = interpolate(options.minX, options.maxX, f32(x) / f32(options.density - 1));
+        let effY = interpolate(options.minY, options.maxY, f32(y) / f32(options.density - 1));
+        out[x + y * options.density] = iterations(effX, effY, options.iter);
+      }
+    </script>
+    <script type="text/web-worker" id="webworker">
+      // Webworker that draws the mandlebrot set onto the screen
+      const COLORS = [[255, 0, 0], [255, 165, 0], [255, 255, 0], [0, 128, 0], [0, 0, 255], [128, 0, 128]]
+      const NOCOLOR = [0, 0, 0]
+      const PREC = 2
+
+      let canvas
+      let ctx
+      const copyCanvas = new OffscreenCanvas(0, 0)
+      const copyCtx = copyCanvas.getContext("2d")
+      let prevEager
+      let instance
+      const memory = new WebAssembly.Memory({
+        initial: 1
+      })
+      let size = 1
+      let computeGPU
+
+      // See https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API
+      async function initGPU(code) {
+        // Write in correct endian format
+        const endian = (() => {
+          const buffer = new ArrayBuffer(2);
+          new DataView(buffer).setInt16(0, 256, true);
+          return new Int16Array(buffer)[0] === 256;
+        })();
+
+        const adapter = await navigator.gpu.requestAdapter()
+        const device = await adapter.requestDevice({
+          label: "GPU device",
+          defaultQueue: {
+            label: "Device queue"
+          }
+        })
+
+        const compute = device.createShaderModule({
+          label: "Calculations",
+          code
+        })
+
+        const options = device.createBuffer({
+          label: "Options",
+          size: 24,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        })
+
+        const layout = device.createBindGroupLayout({
+          label: "Bind group layout",
+          entries: [{
+            binding: 0,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: {
+              type: "storage"
+            }
+          }, {
+            binding: 1,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: {
+              type: "uniform"
+            }
+          }]
+        })
+
+        const computePipeline = await device.createComputePipelineAsync({
+          label: "Compute pipeline",
+          layout: device.createPipelineLayout({
+            bindGroupLayouts: [layout]
+          }),
+          compute: {
+            module: compute,
+            entryPoint: "mandlebrot"
+          }
+        })
+
+        const func = async (density, minX, minY, maxX, maxY, maxIter) => {
+          const bufferSize = 4 * density ** 2 // 32bit ints
+
+          const buffer = new ArrayBuffer(24)
+          const view = new DataView(buffer)
+          view.setUint32(0, density, endian)
+          view.setFloat32(4, minX, endian)
+          view.setFloat32(8, minY, endian)
+          view.setFloat32(12, maxX, endian)
+          view.setFloat32(16, maxY, endian)
+          view.setUint32(20, maxIter, endian)
+
+          device.queue.writeBuffer(options, 0, buffer)
+
+          const out = device.createBuffer({
+            label: "Output",
+            size: bufferSize,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+          })
+
+          const temp = device.createBuffer({
+            label: "Temp output",
+            size: bufferSize,
+            usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST
+          });
+
+          const bindGroup = device.createBindGroup({
+            label: "Bind group",
+            layout,
+            entries: [{
+              binding: 0,
+              resource: {
+                buffer: out
+              }
+            }, {
+              binding: 1,
+              resource: {
+                buffer: options
+              }
+            }]
+          })
+
+          const encoder = device.createCommandEncoder({
+            label: "Command encoder"
+          })
+          const pass = encoder.beginComputePass({
+            label: "Compute pass"
+          })
+
+          pass.setPipeline(computePipeline)
+          pass.setBindGroup(0, bindGroup)
+
+          const size = Math.ceil(density / 8)
+          pass.dispatchWorkgroups(size, size)
+          pass.end()
+
+          encoder.copyBufferToBuffer(
+            out,
+            0,
+            temp,
+            0,
+            bufferSize
+          )
+
+          device.queue.submit([encoder.finish()])
+
+          await temp.mapAsync(
+            GPUMapMode.READ,
+            0,
+            bufferSize
+          )
+
+          const copy = temp.getMappedRange(0, bufferSize)
+          const dataBytes = copy.slice()
+          temp.unmap()
+          return new Uint32Array(dataBytes)
+        }
+
+        // Attach property
+        func.limit = device.limits.maxStorageBufferBindingSize
+        return func
+      }
+
+      function computeCPU(density, minX, minY, maxX, maxY, maxIter) {
+        const nums = Math.ceil(4 * density ** 2 / (2 ** 16) - size)
+        if (nums > 0) {
+          memory.grow(nums)
+          size += nums
+        }
+        instance.exports.mandlebrot(density, minX, minY, maxX, maxY, maxIter)
+        const view = new DataView(memory.buffer)
+        const out = new Uint32Array(density ** 2)
+        for (let i = 0; i < density ** 2; i++) {
+          out[i] = view.getInt32(i * 4, true)
+        }
+        return out
+      }
+
+      async function draw(eager, lazy) {
+        const { density, minX, minY, maxX, maxY, maxIter, coloring, computeMode } = eager
+        const { x, y, scale } = lazy
+
+        if (!prevEager || Object.entries(prevEager).some(([i, j]) => eager[i] !== j)) {
+          copyCanvas.width = copyCanvas.height = density * PREC
+          prevEager = eager
+          
+          let t = performance.now()
+
+          // Loss of one async tick cycle for CPU mode but no one really cares anyway
+          const results = await (computeMode === 0 ? computeGPU : computeCPU)(density, minX, minY, maxX, maxY, maxIter)
+
+          const calc = performance.now() - t
+          t = performance.now()
+
+          const imageData = copyCtx.createImageData(copyCanvas.width, copyCanvas.height)
+          const data = imageData.data
+
+          for (let i = 0; i < density ** 2; i++) {
+            const effX = i % density
+            const effY = Math.floor(i / density)
+            const result = results[i]
+            const color = (result === maxIter ? NOCOLOR : 
+                (coloring === 1 ? COLORS[result % COLORS.length] : [255, 255, 255]))
+            const base = PREC * effX + PREC ** 2 * density * effY
+            for (let x = 0; x < PREC; x++) {
+              for (let y = 0; y < PREC; y++) {
+                const coord = base + x + PREC * density * y
+                data[coord * 4] = color[0];
+						    data[coord * 4 + 1] = color[1];
+						    data[coord * 4 + 2] = color[2];
+                data[coord * 4 + 3] = 255;
+              }
+            }
+          }
+
+          const draw = performance.now() - t
+          console.log("Calc:", calc, "Draw:", draw)
+
+          copyCtx.putImageData(imageData, 0, 0)
+
+          // Reset at end to reduce time that screen is blank
+          canvas.width = canvas.height = density * PREC
+        }
+
+        let t = performance.now()
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        ctx.setTransform(scale, 0, 0, scale, x - canvas.width/2*(scale-1), y - canvas.height/2*(scale-1));
+        ctx.drawImage(copyCanvas, 0, 0)
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+        const update = performance.now() - t
+        console.log("Update:", update)
+
+        self.postMessage("not busy")
+      }
+
+      self.addEventListener("message", async ({ data }) => {
+        if (data[0] instanceof OffscreenCanvas) {
+          canvas = data[0]
+          ctx = data[0].getContext("2d")
+          instance = await WebAssembly.instantiate(data[1], {
+            import: {
+              memory
+            }
+          })
+
+          if (data[2]) computeGPU = await initGPU(data[2])
+          const max = data[2] ? computeGPU.limit : 0
+          self.postMessage(["finished init", max])
+        } else draw(...data)
+      })
+		</script>
+    <!-- Taking code from a demo is almost certaintly not good practice but who cares? -->
+    <script src="https://webassembly.github.io/wabt/demo/libwabt.js"></script>
+    <script>
+      window.addEventListener("load", async () => {
+        const canvas = document.getElementById("graph")
+        const ctx = canvas.transferControlToOffscreen()
+        const code = document.getElementById("webworker").textContent
+        const wabtCode = document.getElementById("wat").textContent
+        const wgslCode = document.getElementById("wgsl").textContent
+        const error = document.getElementById("dense")
+
+        const minXSelect = inputUtil("minX", v => minX = v, true)
+        const minYSelect = inputUtil("minY", v => minY = v, true)
+        const maxXSelect = inputUtil("maxX", v => maxX = v, true)
+        const maxYSelect = inputUtil("maxY", v => maxY = v, true)
+        const densitySelect = inputUtil("density", newDensity => {
+          if (computeMode === 0 && newDensity > gpuMax) {
+            densitySelect(density)
+            error.textContent = `Density too large for high performance option. Maximum size: ${gpuMax.toLocaleString("en-US")}`
+            return
+          }
+
+          // When the density is changed the points become offset
+          const ratio = newDensity / density
+          x *= ratio
+          y *= ratio
+          density = newDensity
+        })
+        const iterSelect = inputUtil("iter", v => maxIter = v)
+        const prog = document.getElementById("prog")
+
+        inputUtil("blackwhite", v => coloring = v)
+        inputUtil("colored", v => coloring = v)
+        inputUtil("gpu", v => {
+          // When GPU mode is used it can lead to density becoming too high
+          if (density > gpuMax) {
+            density = gpuMax
+            densitySelect(density)
+            error.textContent = `Density too large. Maximum size: ${gpuMax.toLocaleString("en-US")}`
+          }
+          computeMode = v
+        })
+        inputUtil("cpu", v => computeMode = v)
+
+        function inputUtil(id, set, reset) {
+          const el = document.getElementById(id)
+          el.addEventListener("change", e => {
+            const val = Number(e.target.value)
+            if (!isNaN(val)) {
+              error.textContent = ""
+              const real = calcTrueValues(1)
+              set(val)
+              if (reset) {
+                // Use these as the viewable edge
+                real[id] = val
+                minX = real.minX
+                minY = real.minY
+                maxX = real.maxX
+                maxY = real.maxY
+                scale = 1
+                x = 0
+                y = 0
+
+                // Reset back to default scaling
+                const values = calcTrueValues(ZOOMOUT)
+                minX = values.minX
+                minY = values.minY
+                maxX = values.maxX
+                maxY = values.maxY
+                scale = ZOOMOUT
+              }
+              if (!isBusy) draw()
+            }
+          })
+
+          return (v) => (el.value = v)
+        }
+      
+        function updateInputs() {
+          const values = calcTrueValues(1)
+          minXSelect(values.minX)
+          minYSelect(values.minY)
+          maxXSelect(values.maxX)
+          maxYSelect(values.maxY)
+        }
+
+        const SUPPORTED = navigator.gpu !== undefined
+        const url = URL.createObjectURL(new Blob([code], {
+          type: "application/javascript"
+        }))
+        const worker = new Worker(url)
+        const wabt = await WabtModule()
+        const buffer = wabt.parseWat("", wabtCode).toBinary({}).buffer
+        const module = await WebAssembly.compile(buffer)
+        worker.postMessage([ctx, module, SUPPORTED ? wgslCode : ""], [ctx])
+
+        // Generate twice as much so zooming out looks nicer
+        const ZOOMOUT = 2
+        let x = 0
+        let y = 0
+        let startX = 0
+        let startY = 0
+        let scale = ZOOMOUT
+        let minX
+        let minY
+        let maxX
+        let maxY
+        let maxIter = 300
+        let density = 500
+        let coloring = 0
+        let isDown = false
+        let isBusy = false
+        let resize = false
+        let computeMode = 0
+        let gpuMax
+
+        function calcTrueValues(zoomOut) {
+          const moveX = -x / (scale * canvas.width) * (maxX - minX)
+          const moveY = -y / (scale * canvas.height) * (maxY - minY)
+          const avgX = (minX + maxX) / 2
+          const avgY = (minY + maxY) / 2
+          return {
+            minX: avgX + (minX - avgX) / scale * zoomOut + moveX,
+            minY: avgY + (minY - avgY) / scale * zoomOut + moveY,
+            maxX: avgX + (maxX - avgX) / scale * zoomOut + moveX,
+            maxY: avgY + (maxY - avgY) / scale * zoomOut + moveY
+          }
+        }
+
+        function resetDefaults() {
+          // Keep the behavior consistent
+          scale = ZOOMOUT
+          minX = -2 * ZOOMOUT
+          minY = -2 * ZOOMOUT
+          maxX = 2 * ZOOMOUT
+          maxY = 2 * ZOOMOUT
+        }
+
+        document.getElementById("reset").addEventListener("click", () => {
+          resetDefaults()
+          updateInputs()
+          draw()
+        })
+
+        worker.addEventListener("message", ({
+          data
+        }) => {
+          if (data[0] === "finished init") {
+            gpuMax = Math.floor(Math.sqrt(data[1] / 4) / ZOOMOUT)
+            draw()
+          }
+          else if (data === "not busy") {
+            isBusy = false
+            const now = performance.now()
+            const time = now - start
+            start = now
+            const formatted = time >= 1000 ? (time / 1000).toFixed(2) + "s" : time.toFixed(0) + "ms"
+            prog.textContent = "Finished drawing in " + formatted
+ 
+            if (resize) {
+              // resize
+              const values = calcTrueValues(ZOOMOUT)
+              minX = values.minX
+              minY = values.minY
+              maxX = values.maxX
+              maxY = values.maxY
+              scale = ZOOMOUT
+              x = 0
+              y = 0
+              resize = false
+
+              updateInputs()
+              requestAnimationFrame(draw)
+            }
+          }
+        })
+
+        let start
+
+        function draw() {
+          const trueValues = calcTrueValues(ZOOMOUT)
+          isBusy = true
+          start = performance.now()
+          prog.textContent = "Drawing..."
+          worker.postMessage([{
+            // The ZOOMOUT factor reduces precision
+            density: density * ZOOMOUT,
+            minX,
+            minY,
+            maxX,
+            maxY,
+            maxIter,
+            coloring,
+            computeMode
+          }, {
+            x,
+            y,
+            scale,
+          }])
+        }
+
+        canvas.addEventListener("pointerdown", (e) => {
+          if (isBusy) return
+          startX = e.clientX
+          startY = e.clientY
+          isDown = true
+        })
+        canvas.addEventListener("pointerup", () => {
+          isDown = false
+        })
+        canvas.addEventListener("pointerleave", () => {
+          isDown = false
+        })
+        canvas.addEventListener("pointermove", (e) => {
+          if (!isDown || isBusy) return
+          x += (e.clientX - startX) / canvas.clientWidth * canvas.width
+          y += (e.clientY - startY) / canvas.clientHeight * canvas.height
+          startX = e.clientX
+          startY = e.clientY
+
+          const outX = Math.abs(x) >= canvas.width * (scale - 1) / 2
+          const outY = Math.abs(y) >= canvas.height * (scale - 1) / 2
+          if (outX || outY) resize = true
+
+          updateInputs()
+          draw()
+        })
+        canvas.addEventListener("wheel", (e) => {
+          e.preventDefault()
+          if (isBusy) return
+
+          const scaleDiff = e.deltaY < 0 ? 1 : -1
+          const zoom = 2 ** (scaleDiff / 20)
+          scale *= zoom;
+          // It took me way too long to find out that it was this easy
+          x *= zoom
+          y *= zoom
+          if (scale >= 5 || scale < 1) resize = true
+
+          updateInputs()
+          draw()
+        })
+
+        // Update all current values
+        resetDefaults()
+        updateInputs()
+        densitySelect(density)
+        iterSelect(maxIter)
+        if (!SUPPORTED) {
+          document.getElementById("gpuerror").style.display = "block"
+          document.getElementById("cpu").checked = true
+          document.getElementById("gpu").disabled = true
+          computeMode = 1
+        }
+      })
+    </script>
+  </head>
+  <body>
+    <div id="options">
+      <label for="density">Point density: </label><input type="number" min="1" step="1" id="density" /><br />
+      <div id="dense"></div>
+      <label>Viewing range: </label> <input type="number" id="minX" /> + <input type="number" id="minY" />i
+      to <input type="number" id="maxX" /> + <input type="number" id="maxY" />i<br />
+      <label for="iter">Maximum iterations: </label><input type="number" min="1" step="1" id="iter" /><br />
+      Coloring: <input type="radio" id="blackwhite" name="color" value="0" checked autocomplete="off" /><label for="blackwhite">Black and White</label>
+      <input type="radio" id="colored" name="color" value="1" autocomplete="off" /><label for="colored">Colored</label><br />
+      Performance:<br /><input type="radio" id="gpu" name="perf" value="0" checked autocomplete="off" /><label for="gpu">High performance (low precision)</label><br />
+      <input type="radio" id="cpu" name="perf" value="1" autocomplete="off" /><label for="cpu">Low performance (high precision)</label><br />
+      <div id="gpuerror">Your browser does not support the high performance option.</div><br />
+      <div id="prog"></div>
+      <button id="reset">Reset view</button>
+    </div>
+    <canvas id="graph"></canvas>
+  </body>
+</html>

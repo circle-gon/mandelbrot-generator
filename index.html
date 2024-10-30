@@ -796,7 +796,7 @@
           prog.textContent = "Drawing..."
           worker.postMessage([{
             // The ZOOMOUT factor reduces precision
-            density: density * ZOOMOUT ** 2,
+            density: density * ZOOMOUT,
             minX,
             minY,
             maxX,
@@ -872,10 +872,10 @@
   </head>
   <body>
     <div id="options">
-      <label for="density" title="How many points (in the X and Y axis) to use to draw the graph">Point density: </label><input type="number" min="1" step="1" id="density" /><br />
+      <label for="density" title="How many points (in the X and Y axis) to use to draw the graph">Point density: </label><input type="number" min="1" step="1" id="density" autocomplete="off" /><br />
       <div id="dense"></div>
-      <label title="The range of points to visualize">Viewing range: </label> <input type="number" id="minX" /> + <input type="number" id="minY" />i
-      to <input type="number" id="maxX" /> + <input type="number" id="maxY" />i<br />
+      <label title="The range of points to visualize">Viewing range: </label> <input type="number" id="minX" autocomplete="off" /> + <input type="number" id="minY" autocomplete="off" />i
+      to <input type="number" id="maxX" autocomplete="off" /> + <input type="number" id="maxY" autocomplete="off" />i<br />
       <label for="iter" title="How many iterations of the Mandelbrot function to use">Maximum iterations: </label><input type="number" min="1" step="1" id="iter" /><br />
       Coloring: <input type="radio" id="grayscale" name="color" value="0" checked autocomplete="off" /><label title="Grayscale (based on iteration count)" for="grayscale">Gradient</label>
       <input type="radio" id="blackwhite" name="color" value="1" autocomplete="off" /><label title="Black-white coloring" for="blackwhite">Black and White</label>

@@ -172,6 +172,8 @@
         ;; Generate numbers
         (func
           (export "mandelbrot")
+          (param $sI i32)
+          (param $sE i32)
           (param $d i32)
           (param $sX f64)
           (param $sY f64)
@@ -179,9 +181,13 @@
           (param $mY f64)
           (param $i i32)
           (local $c i32)
+          local.get $sI
+          local.set $c
           (loop $iter
             i32.const 4
             local.get $c
+            local.get $sI
+            i32.sub
             i32.mul
             local.get $sX
             local.get $mX
@@ -211,9 +217,7 @@
             call $mandelbrot
             i32.store
             local.get $c
-            local.get $d
-            local.get $d
-            i32.mul
+            local.get $sE
             i32.lt_u
             (if
               (then
@@ -273,6 +277,43 @@
         out[x + y * options.density] = iterations(effX, effY, options.iter);
       }
     </script>
+    <script type="text/web-worker" id="webworker2">
+      // Webworker to calculate the mandlebrot set (for low performance)
+      let instance
+      let memory
+      let size = 1
+
+      // using startI and endI isn't the most efficent, but I'm lazy
+      function compute({ startI, endI, density, minX, minY, maxX, maxY, maxIter }) {
+        const count = endI - startI
+        const nums = Math.ceil(4 * count / (2 ** 16) - size)
+        if (nums > 0) {
+          memory.grow(nums)
+          size += nums
+        }
+        instance.exports.mandelbrot(startI, endI, density, minX, minY, maxX, maxY, maxIter)
+        const view = new DataView(memory.buffer)
+        const out = new Uint32Array(count)
+        for (let i = 0; i < count; i++) {
+          out[i] = view.getInt32(i * 4, true)
+        }
+        return out
+      }
+
+      self.addEventListener("message", async ({ data }) => {
+        if (data instanceof WebAssembly.Module) {
+          memory = new WebAssembly.Memory({
+            initial: 1
+          })
+          instance = await WebAssembly.instantiate(data, {
+            import: {
+              memory
+            }
+          })
+          self.postMessage("finished init")
+        } else self.postMessage(compute(data))
+      })
+    </script>
     <script type="text/web-worker" id="webworker">
       // Webworker that draws the mandelbrot set onto the screen
       const COLORS = [[255, 0, 0], [255, 165, 0], [255, 255, 0], [0, 128, 0], [0, 0, 255], [128, 0, 128]]
@@ -285,11 +326,9 @@
       const copyCtx = copyCanvas.getContext("2d")
       let prevEager
       let instance
-      const memory = new WebAssembly.Memory({
-        initial: 1
-      })
       let size = 1
       let computeGPU
+      let computeCPU
 
       // See https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API
       async function initGPU(code) {
@@ -430,19 +469,52 @@
         return func
       }
 
-      function computeCPU(density, minX, minY, maxX, maxY, maxIter) {
-        const nums = Math.ceil(4 * density ** 2 / (2 ** 16) - size)
-        if (nums > 0) {
-          memory.grow(nums)
-          size += nums
+      function initCPU(module, code) {
+        const url = URL.createObjectURL(new Blob([code], {
+          type: "application/javascript"
+        }))
+        const workerCount = navigator.hardwareConcurrency
+        const workers = Array(workerCount).fill().map(() => new Worker(url))
+        const out = (density, minX, minY, maxX, maxY, maxIter) => {  
+          const chunk = Math.ceil(density ** 2 / workerCount)
+          let count = 0
+          const out = new Uint32Array(density ** 2)
+
+          return new Promise(r => {
+            for (const [i, worker] of workers.entries()) {
+              const startI = i * chunk
+              const endI = i === workerCount - 1 ? density ** 2 : (i + 1) * chunk
+              worker.postMessage({
+                startI,
+                endI,
+                density, 
+                minX, 
+                minY, 
+                maxX, 
+                maxY, 
+                maxIter
+              })
+              worker.addEventListener("message", ({ data }) => {
+                count++
+                out.set(data, startI)
+                if (count === workerCount) r(out)
+              }, { once: true })
+            }
+          })
         }
-        instance.exports.mandelbrot(density, minX, minY, maxX, maxY, maxIter)
-        const view = new DataView(memory.buffer)
-        const out = new Uint32Array(density ** 2)
-        for (let i = 0; i < density ** 2; i++) {
-          out[i] = view.getInt32(i * 4, true)
-        }
-        return out
+
+        let count = 0
+        return new Promise(r => {
+          for (const worker of workers) {
+            worker.postMessage(module)
+            worker.addEventListener("message", ({ data }) => {
+              if (data === "finished init") {
+                count++
+                if (count === workerCount) r(out)
+              }
+            }, { once: true })
+          }
+        })
       }
 
       function interpolate(num) {
@@ -460,6 +532,7 @@
         const { density, minX, minY, maxX, maxY, maxIter, coloring, computeMode } = eager
         const { x, y, scale } = lazy
 
+        console.log("Starting draw")
         if (!prevEager || Object.entries(prevEager).some(([i, j]) => eager[i] !== j)) {
           copyCanvas.width = copyCanvas.height = density * PREC
           prevEager = eager
@@ -481,7 +554,7 @@
             const result = results[i]
 
             const f = Math.min(result / maxIter, 1)
-            const color = coloring === 1 ? interpolate(f) : (result === maxIter ? NOCOLOR : 
+            const color = coloring === 0 ? interpolate(f) : (result === maxIter ? NOCOLOR : 
               (coloring === 2 ? COLORS[result % COLORS.length] : [255, 255, 255]))
 
             const base = PREC * effX + PREC ** 2 * density * effY
@@ -514,6 +587,7 @@
 
         const update = performance.now() - t
         console.log("Update:", update)
+        console.log("Ending draw")
 
         self.postMessage("not busy")
       }
@@ -522,12 +596,7 @@
         if (data[0] instanceof OffscreenCanvas) {
           canvas = data[0]
           ctx = data[0].getContext("2d")
-          instance = await WebAssembly.instantiate(data[1], {
-            import: {
-              memory
-            }
-          })
-
+          computeCPU = await initCPU(data[1], data[3])
           if (data[2]) computeGPU = await initGPU(data[2])
           const max = data[2] ? computeGPU.limit : 0
           self.postMessage(["finished init", max])
@@ -541,6 +610,7 @@
         const canvas = document.getElementById("graph")
         const ctx = canvas.transferControlToOffscreen()
         const code = document.getElementById("webworker").textContent
+        const code2 = document.getElementById("webworker2").textContent
         const wabtCode = document.getElementById("wat").textContent
         const wgslCode = document.getElementById("wgsl").textContent
         const error = document.getElementById("dense")
@@ -606,7 +676,7 @@
                 maxY = values.maxY
                 scale = ZOOMOUT
               }
-              if (!isBusy) draw()
+              draw()
             }
           })
 
@@ -629,17 +699,17 @@
         const wabt = await WabtModule()
         const buffer = wabt.parseWat("", wabtCode).toBinary({}).buffer
         const module = await WebAssembly.compile(buffer)
-        worker.postMessage([ctx, module, SUPPORTED ? wgslCode : ""], [ctx])
+        worker.postMessage([ctx, module, SUPPORTED ? wgslCode : "", code2], [ctx])
 
-        // Generate twice as much so zooming out looks nicer
         // Panning
+        // Generate twice as much so zooming out looks nicer
         const ZOOMOUT = 2
         let x
         let y
         let scale
         
         // Drawing
-        let density = 500
+        let density = 1000
         let minX
         let minY
         let maxX
@@ -683,16 +753,11 @@
         document.getElementById("reset").addEventListener("click", () => {
           resetDefaults()
           updateInputs()
-          if (!isBusy) draw()
+          draw()
         })
+        document.getElementById("force").addEventListener("click", draw)
 
-        document.getElementById("force").addEventListener("click", () => {
-          if (!isBusy) draw()
-        })
-
-        worker.addEventListener("message", ({
-          data
-        }) => {
+        worker.addEventListener("message", ({ data }) => {
           if (data[0] === "finished init") {
             gpuMax = Math.floor(Math.sqrt(data[1] / 4) / ZOOMOUT)
             draw()
@@ -703,7 +768,7 @@
             const time = now - start
             start = now
             const formatted = time >= 1000 ? (time / 1000).toFixed(2) + "s" : time.toFixed(0) + "ms"
-            prog.textContent = "Finished drawing in " + formatted
+            prog.textContent = "Finished in " + formatted
  
             if (resize) {
               // resize
@@ -724,14 +789,14 @@
         })
 
         let start
-
         function draw() {
+          if (isBusy) return
           isBusy = true
           start = performance.now()
           prog.textContent = "Drawing..."
           worker.postMessage([{
             // The ZOOMOUT factor reduces precision
-            density: density * ZOOMOUT,
+            density: density * ZOOMOUT ** 2,
             minX,
             minY,
             maxX,
@@ -758,6 +823,9 @@
         canvas.addEventListener("pointerleave", () => {
           isDown = false
         })
+        canvas.addEventListener("pointercancel", () => {
+          isDown = false
+        })
         canvas.addEventListener("pointermove", (e) => {
           if (!isDown || isBusy) return
           x += (e.clientX - startX) / canvas.clientWidth * canvas.width
@@ -782,11 +850,11 @@
           // It took me way too long to find out that it was this easy
           x *= zoom
           y *= zoom
-          if (scale >= 5 || scale < 1) resize = true
+          if (scale >= 4 || scale < 1) resize = true
 
           updateInputs()
           draw()
-        })
+        }, { passive: false })
 
         // Update all current values
         resetDefaults()
@@ -809,8 +877,8 @@
       <label title="The range of points to visualize">Viewing range: </label> <input type="number" id="minX" /> + <input type="number" id="minY" />i
       to <input type="number" id="maxX" /> + <input type="number" id="maxY" />i<br />
       <label for="iter" title="How many iterations of the Mandelbrot function to use">Maximum iterations: </label><input type="number" min="1" step="1" id="iter" /><br />
-      Coloring: <input type="radio" id="blackwhite" name="color" value="0" checked autocomplete="off" /><label title="Black-white coloring" for="blackwhite">Black and White</label>
-      <input type="radio" id="grayscale" name="color" value="1" autocomplete="off" /><label title="Grayscale (based on iteration count)" for="grayscale">Grayscale</label>
+      Coloring: <input type="radio" id="grayscale" name="color" value="0" checked autocomplete="off" /><label title="Grayscale (based on iteration count)" for="grayscale">Gradient</label>
+      <input type="radio" id="blackwhite" name="color" value="1" autocomplete="off" /><label title="Black-white coloring" for="blackwhite">Black and White</label>
       <input type="radio" id="colored" name="color" value="2" autocomplete="off" /><label title="Red-purple coloring (based on iteration count)" for="colored">Colored</label><br />
       Performance:<br /><input type="radio" id="gpu" name="perf" value="0" checked autocomplete="off" /><label title="More speed, less accuracy, and a cap on point density (uses GPU)" for="gpu">High performance (low precision)</label><br />
       <input type="radio" id="cpu" name="perf" value="1" autocomplete="off" /><label title="Less speed and more accuracy (uses CPU)" for="cpu">Low performance (high precision)</label><br />
